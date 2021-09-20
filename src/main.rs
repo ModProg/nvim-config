@@ -207,8 +207,11 @@ fn main() -> Result<()> {
                     vimscript.push(format!("autocmd {} {} {}", triggers, matching, cmd))
                 } else {
                     vimscript.push(format!(
-                        "autocmd {} {} if {} | {} | endif",
-                        triggers, matching, condition, cmd
+                        "autocmd {} {} if {} | execute '{}' | endif",
+                        triggers,
+                        matching,
+                        condition,
+                        cmd.replace('\'', r"\'")
                     ))
                 }
             }
