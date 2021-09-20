@@ -36,6 +36,11 @@ struct Config {
     #[serde(default)]
     #[serde_as(deserialize_as = "HashMap<FromInto<MapFlagParser>, _>")]
     keys: HashMap<(BitFlags<MapFlag>, Option<String>), HashMap<String, MaybePrefixedMapping>>,
+    #[serde(default)]
+    #[serde_as(deserialize_as = "OneOrMany<_>")]
+    set: Vec<String>,
+    #[serde(default)]
+    set_value: HashMap<String, String>,
 }
 
 #[bitflags]
@@ -183,6 +188,7 @@ fn main() -> Result<()> {
                 }
             }
         }
+
         for AutoCommand {
             triggers,
             cmd,
@@ -215,6 +221,14 @@ fn main() -> Result<()> {
                     ))
                 }
             }
+        }
+
+        for set in config.set {
+            vimscript.push(format!("set {}", set));
+        }
+
+        for (name, value) in config.set_value {
+            vimscript.push(format!("set {}={}", name, value));
         }
     }
 
