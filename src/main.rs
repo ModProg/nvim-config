@@ -25,6 +25,8 @@ struct AutoCommand {
     matching: Option<String>,
     #[serde(default)]
     event: HashMap<String, String>,
+    #[serde(default)]
+    silent: bool,
 }
 
 #[serde_as]
@@ -43,7 +45,6 @@ struct Config {
     set_value: HashMap<String, String>,
     #[serde(default)]
     r#let: HashMap<String, String>,
-
 }
 
 #[bitflags]
@@ -198,10 +199,12 @@ fn main() -> Result<()> {
             lua,
             matching,
             event,
+            silent,
         } in config.auto_commands
         {
             let triggers = triggers.join(",");
             let matching = matching.unwrap_or_else(|| "*".to_string());
+            let silent = if silent { "silent!" } else { "" };
             let condition = event
                 .iter()
                 .map(|(key, value)| format!("v:event.{} is '{}'", key, value))
@@ -213,12 +216,16 @@ fn main() -> Result<()> {
                 .chain(lua.iter().map(|value| format!("lua {}", value)))
             {
                 if condition.is_empty() {
-                    vimscript.push(format!("autocmd {} {} {}", triggers, matching, cmd))
+                    vimscript.push(format!(
+                        "autocmd {} {} {} {}",
+                        triggers, matching, silent, cmd
+                    ))
                 } else {
                     vimscript.push(format!(
-                        "autocmd {} {} if {} | execute '{}' | endif",
+                        "autocmd {} {} {} if {} | execute '{}' | endif",
                         triggers,
                         matching,
+                        silent,
                         condition,
                         cmd.replace('\'', r"\'")
                     ))
