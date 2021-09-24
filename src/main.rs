@@ -41,6 +41,9 @@ struct Config {
     set: Vec<String>,
     #[serde(default)]
     set_value: HashMap<String, String>,
+    #[serde(default)]
+    r#let: HashMap<String, String>,
+
 }
 
 #[bitflags]
@@ -229,6 +232,10 @@ fn main() -> Result<()> {
 
         for (name, value) in config.set_value {
             vimscript.push(format!("set {}={}", name, value));
+        }
+
+        for (name, value) in config.r#let {
+            vimscript.push(format!("let {}={}", name, value));
         }
     }
 
