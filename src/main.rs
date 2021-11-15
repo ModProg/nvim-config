@@ -9,7 +9,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 use enumflags2::{bitflags, BitFlags};
 use serde::Deserialize;
-use serde_with::{serde_as, DeserializeFromStr, FromInto, OneOrMany};
+use serde_with::{serde_as, DeserializeFromStr, OneOrMany};
 
 #[serde_as]
 #[derive(Deserialize)]
@@ -27,6 +27,8 @@ struct AutoCommand {
     event: HashMap<String, String>,
     #[serde(default)]
     silent: bool,
+    #[serde(default)]
+    file_type: Option<String>,
 }
 
 #[serde_as]
@@ -36,8 +38,7 @@ struct Config {
     #[serde_as(deserialize_as = "OneOrMany<_>")]
     auto_commands: Vec<AutoCommand>,
     #[serde(default)]
-    #[serde_as(deserialize_as = "HashMap<FromInto<MapFlagParser>, _>")]
-    keys: HashMap<(BitFlags<MapFlag>, Option<String>), HashMap<String, MaybePrefixedMapping>>,
+    keys: HashMap<MapFlags, HashMap<String, MaybePrefixedMapping>>,
     #[serde(default)]
     #[serde_as(deserialize_as = "OneOrMany<_>")]
     set: Vec<String>,
@@ -56,24 +57,27 @@ enum MapFlag {
     Visual,
     Leader,
     Command,
+    Recursive,
 }
 
-#[derive(DeserializeFromStr)]
-struct MapFlagParser {
-    flags: HashSet<MapFlag>,
+#[derive(DeserializeFromStr, Hash, PartialEq, Eq)]
+struct MapFlags {
+    flags: BitFlags<MapFlag>,
+    file_type: Option<String>,
     label: Option<String>,
 }
 
-impl FromStr for MapFlagParser {
+impl FromStr for MapFlags {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         use MapFlag::*;
         let mut flags = HashSet::new();
-        let (s, label) = match s.split_once("_") {
+        let (s, mut label) = match s.split_once("_") {
             Some((s, label)) => (s, Some(label.to_string())),
             None => (s, None),
         };
+        let mut file_type = None;
 
         for c in s.to_ascii_lowercase().chars() {
             flags.insert(match c {
@@ -82,17 +86,33 @@ impl FromStr for MapFlagParser {
                 'v' => Visual,
                 'l' => Leader,
                 'c' => Command,
-                '_' => break,
+                'r' => Recursive,
+                'f' => match (label, file_type) {
+                    (Some(l), None) => {
+                        match l.split_once("_") {
+                            Some((ft, l)) => {
+                                file_type = Some(ft.to_string());
+                                label = Some(l.to_string());
+                            }
+                            None => {
+                                file_type = Some(l.to_string());
+                                label = None;
+                            }
+                        };
+                        continue;
+                    }
+                    (_, Some(_)) => bail!("Duplicate filetype flag not supported: `{}`", s),
+                    (None, _) => bail!("Filetype flag only supported when filetype is given"),
+                },
                 _ => bail!("Unsuported flag for Mapping: `{}`", c),
             });
         }
-        Ok(MapFlagParser { flags, label })
-    }
-}
-
-impl From<MapFlagParser> for (BitFlags<MapFlag>, Option<String>) {
-    fn from(mfp: MapFlagParser) -> Self {
-        (mfp.flags.into_iter().collect(), mfp.label)
+        let flags = flags.into_iter().collect();
+        Ok(MapFlags {
+            flags,
+            label,
+            file_type,
+        })
     }
 }
 
@@ -146,12 +166,33 @@ fn main() -> Result<()> {
             }
         }
     }
-    let mut vimscript: Vec<String> = Vec::new();
+    let mut vimscript: HashMap<Option<String>, Vec<String>> = HashMap::new();
+    fn mut_or_default<'map>(
+        map: &'map mut HashMap<Option<String>, Vec<String>>,
+        key: &Option<String>,
+    ) -> &'map mut Vec<String> {
+        if !map.contains_key(key) {
+            map.insert(key.clone(), Vec::new());
+        }
+        map.get_mut(key).expect("Inserted missing key")
+    }
 
     for (config, filename) in configs {
-        vimscript.push(format!("\n\n\" File: {}", filename));
-        vimscript.push("\n\" Keybindings:".to_string());
-        for ((flags, label), k) in config.keys {
+        {
+            let vimscript = mut_or_default(&mut vimscript, &None);
+            vimscript.push(format!("\n\n\" File: {}", filename));
+            vimscript.push("\n\" Keybindings:".to_string());
+        }
+        for (
+            MapFlags {
+                flags,
+                label,
+                file_type,
+            },
+            k,
+        ) in config.keys
+        {
+            let vimscript = mut_or_default(&mut vimscript, &file_type);
             if let Some(label) = label {
                 vimscript.push(format!("\" {}", label));
             }
@@ -168,6 +209,11 @@ fn main() -> Result<()> {
                     }
                 }
             }
+            let cmd = if flags.contains(MapFlag::Recursive) {
+                "map"
+            } else {
+                "noremap"
+            };
             for (mut key, mut binding) in kbs {
                 if flags.contains(MapFlag::Leader) {
                     key = format!("<LEADER>{}", key);
@@ -177,7 +223,8 @@ fn main() -> Result<()> {
                     binding = format!("<CMD>{}<CR>", binding);
                 }
                 let cmd = format!(
-                    "noremap <silent> {} {}",
+                    "{} <silent> {} {}",
+                    cmd,
                     key.split_ascii_whitespace().collect::<String>(),
                     binding
                 );
@@ -200,10 +247,18 @@ fn main() -> Result<()> {
             matching,
             event,
             silent,
+            file_type,
         } in config.auto_commands
         {
+            let vimscript = mut_or_default(&mut vimscript, &None);
             let triggers = triggers.join(",");
-            let matching = matching.unwrap_or_else(|| "*".to_string());
+            let matching = matching.unwrap_or_else(|| {
+                if file_type.is_some() {
+                    "<buffer>".to_string()
+                } else {
+                    "*".to_string()
+                }
+            });
             let silent = if silent { "silent!" } else { "" };
             let condition = event
                 .iter()
@@ -233,22 +288,42 @@ fn main() -> Result<()> {
             }
         }
 
-        for set in config.set {
-            vimscript.push(format!("set {}", set));
-        }
+        {
+            // TODO implemnt file_type for set
+            let global = mut_or_default(&mut vimscript, &None);
 
-        for (name, value) in config.set_value {
-            vimscript.push(format!("set {}={}", name, value));
-        }
+            for set in config.set {
+                global.push(format!("set {}", set));
+            }
 
-        for (name, value) in config.r#let {
-            vimscript.push(format!("let {}={}", name, value));
+            for (name, value) in config.set_value {
+                global.push(format!("set {}={}", name, value));
+            }
+
+            for (name, value) in config.r#let {
+                global.push(format!("let {}={}", name, value));
+            }
         }
     }
 
-    let plugin_dir = nvim_dir.join("plugin");
-    fs::create_dir_all(&plugin_dir)?;
+    for vimscript in vimscript {
+        let ft_plugin_dir = nvim_dir.join("ftplugin");
+        match vimscript {
+            (None, vimscript) => {
+                let plugin_dir = nvim_dir.join("plugin");
+                fs::create_dir_all(&plugin_dir)?;
 
-    fs::write(plugin_dir.join("config.vim"), vimscript.join("\n"))?;
+                fs::write(plugin_dir.join("config.vim"), vimscript.join("\n"))?;
+            }
+            (Some(file_type), vimscript) => {
+                fs::create_dir_all(&ft_plugin_dir)?;
+
+                fs::write(
+                    ft_plugin_dir.join(file_type + "_config.vim"),
+                    vimscript.join("\n"),
+                )?;
+            }
+        }
+    }
     Ok(())
 }
