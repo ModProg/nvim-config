@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsStr,
+    fmt::Display,
     fs::{self, read_dir, File},
     io::Read,
     str::FromStr,
@@ -43,9 +44,27 @@ struct Config {
     #[serde_as(deserialize_as = "OneOrMany<_>")]
     set: Vec<String>,
     #[serde(default)]
-    set_value: HashMap<String, String>,
+    set_value: HashMap<String, Value>,
     #[serde(default)]
-    r#let: HashMap<String, String>,
+    r#let: HashMap<String, Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Value {
+    Int(i64),
+    String(String),
+    Bool(bool),
+}
+impl Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Int(value) => write!(f, "{value}"),
+            Value::String(value) => write!(f, r#""{value}""#),
+            Value::Bool(true) => write!(f, "yes"),
+            Value::Bool(false) => write!(f, "no"),
+        }
+    }
 }
 
 #[bitflags]
@@ -297,7 +316,7 @@ fn main() -> Result<()> {
             }
 
             for (name, value) in config.set_value {
-                global.push(format!("set {}={}", name, value));
+                global.push(format!(r#"set {}={}"#, name, value));
             }
 
             for (name, value) in config.r#let {
